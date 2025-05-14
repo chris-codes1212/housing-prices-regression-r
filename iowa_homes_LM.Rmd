@@ -1,8 +1,8 @@
 ---
-title: "Project Checkpoint"
+title: "Housing Prices Regression"
 author: "Christopher Thompson"
 date: "`r Sys.Date()`"
-output: pdf_document
+output: rmarkdown::github_document
 ---
 
 ```{r setup, include=FALSE}
