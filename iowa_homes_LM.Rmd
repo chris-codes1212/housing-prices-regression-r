@@ -1,0 +1,443 @@
+---
+title: "Project Checkpoint"
+author: "Christopher Thompson"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# install.packages("corrr")
+
+library(MASS)
+library(ResourceSelection) # For Hosmer-Lemeshow test
+library(ggplot2)
+library(tidyverse)
+library(bestglm)
+library(pROC)
+library(corrplot)
+library(ggplot2)
+library(ggcorrplot)
+library(dplyr)
+library(corrr)
+```
+
+### Load Data Set
+
+Load in the "House Prices - Advanced Regression Techniques" data set from kaggle.
+
+```{r Load Data}
+iowa.homes <- read.csv("../house-prices-data/train.csv", header=TRUE, sep=",") 
+
+```
+
+### Explore Missing Values Part 1
+
+Below we can see that there are a number of variables with missing data. The most concerning features are LotFrontage, FireplaceQu, Fence, MiscFeature, as they have very large amounts (15% - 99%) of data absent. For Alley, MiscFeature, PoolQC, FireplaceQu, Fence, these are homes that do not have an alley, a miscelaneous feature (ie. elevator, 2nd Garage, Shed, Tennis Court, other), a pool, fireplace, or a fence. LotFrontage represents the amount of space between the street and the start of the lot, and its possible that these NA values are due to no measurement being made or no space between the lot and the street. The features with 40% or more missing data (Alley, MiscFeature, PoolQC, FireplaceQu, and Fence) will be removed and new binary features (HasAlley, HasMiscFeature, HasFireplace, HasFence) will be added.
+
+```{r, missing value information}
+# get percentage of missing data for each column
+na.percentages <- sort(colMeans(is.na(iowa.homes)) * 100)
+
+#create df of missing data percentage information
+na.df <- data.frame(
+  feature = names(na.percentages),
+  percentage_na = na.percentages
+)
+
+#subset df to only contain features with some missing data
+na.df <- na.df[na.df$percentage_na > 0,]
+
+#plot feature by missing data percentage to visualize
+ggplot(data=na.df, aes(x = reorder(feature, percentage_na), y = percentage_na)) + 
+  geom_col(fill = "lightblue") +
+  theme_dark() +
+  theme(axis.text.x=element_text(angle=90), plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Feature Name", y = "% Missing", title = "Features With Missing Data")
+
+#print data frame to display numeric percentages for each feature
+na.df
+```
+
+### Feature Engineer Part 1
+
+Below I will be adding new binary features HasAlley, HasMiscFeature, HasFireplace, HasFence and removing those with large amounts of missing data (NA \> 40%).
+
+```{r, Feature Engineer Part 1}
+features_to_remove <- na.df$feature[na.df$percentage_na > 40]
+
+#add new binary feature "HasBsmt"
+iowa.homes <- iowa.homes %>%
+  mutate(HasAlley = case_when(
+    is.na(Alley) ~ 'no', .default = 'yes')
+  )
+
+#add new binary feature "HasMiscFeature"
+iowa.homes <- iowa.homes %>%
+  mutate(HasMiscFeature = case_when(
+    is.na(MiscFeature) ~ 'no', .default = 'yes')
+  )
+
+#add new binary feature "HasFireplace"
+iowa.homes <- iowa.homes %>%
+  mutate(HasFireplace = case_when(
+    is.na(FireplaceQu) ~ 'no', .default = 'yes')
+  )
+
+#add new binary feature "HasFence"
+iowa.homes <- iowa.homes %>%
+  mutate(HasFence = case_when(
+    is.na(Fence) ~ 'no', .default = 'yes')
+  )
+
+#add new binary feature "HasPool"
+iowa.homes <- iowa.homes %>%
+  mutate(HasPool = case_when(
+    is.na(PoolQC) ~ 'no', .default = 'yes')
+  )
+
+#add new binary feature "HasBsmt"
+iowa.homes <- iowa.homes %>%
+  mutate(HasBsmt = case_when(
+    is.na(BsmtQual) ~ 'no', .default = 'yes')
+  )
+
+#remove columns with large amounts of missing data
+iowa.homes <- iowa.homes[, colMeans(is.na(iowa.homes)) <= 0.4]
+```
+
+### Visualize New Binary Features
+
+From the visualizations below, we can see that there is not a huge difference in means for a house having a miscellaneous feature or not, having and alley or not, having a fence or not. However, there seems to be a significant difference in means for a house that has a pool vs. not, where homes with a pool seems to be significantly more expensive, and homes with a fireplace are also more expensive. I will therefore remove the HasAlley, HasFence, and HasMiscFeature columns, but will keep the HasPool, and HasFireplace features.
+
+I also decided to look at the other two binary vars, 'Street', 'Utilities', and 'CentralAir' to visualize any difference in the saleprice between the two levels. Because there are so few values in the NoSeWa and because the mean sale price of this variable appears to be fairly close to the mean sale price of AllPub, I will remove this feature from the data set. However, the difference in mean and variance from analysis of the box plots for 'Street' and 'CentralAir' do seem to be statistically significant and indicate that these features may be associated with home sale price.
+
+```{r, Visualize New Binary Features}
+
+# turn new binary variable to factor type
+iowa.homes$HasMiscFeature <- factor(iowa.homes$HasMiscFeature)
+iowa.homes$HasAlley <- factor(iowa.homes$HasAlley)
+iowa.homes$HasFence <- factor(iowa.homes$HasFence)
+iowa.homes$HasFireplace <- factor(iowa.homes$HasFireplace)
+iowa.homes$HasPool <- factor(iowa.homes$HasPool)
+iowa.homes$HasBsmt <- factor(iowa.homes$HasBsmt)
+
+#visualize data
+ggplot(data = iowa.homes, aes(x=HasMiscFeature, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=HasAlley, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=HasFence, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=HasFireplace, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=HasPool, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=HasBsmt, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=Street, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=Street, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=Utilities, y=SalePrice)) + geom_boxplot()
+ggplot(data = iowa.homes, aes(x=CentralAir, y=SalePrice)) + geom_boxplot()
+
+#remove HasAlley, HasFence, HasMiscFeature
+to_drop <- c("HasAlley", "HasMiscFeature", "HasFence", "Street")
+iowa.homes <- iowa.homes %>% select(-any_of(to_drop))
+
+```
+
+```{r, get numeric and categorical columns}
+
+numeric_cols <- iowa.homes %>% select(where(is.numeric), -SalePrice) %>% names()
+categorical_cols <- iowa.homes %>% select(where(~ is.factor(.) || is.character(.))) %>% names()
+# categorical_cols <- sapply(iowa.homes, negate(is.numeric))
+
+```
+
+### Replace Categorical NAs with 'None'
+
+Below I replace NA with "None" in remaining features that represent the feature not being present so we do not remove features where this data is missing.
+
+```{r Replace categorical NAs with Mode}
+to_replace <- c("GarageType","GarageFinish","GarageQual","GarageCond",
+               "BsmtFinType1","BsmtFinType2","BsmtExposure","BsmtCond","BsmtQual",
+               "MasVnrType")
+
+# replace missing data with 'None' in specified columns
+iowa.homes <- iowa.homes %>% 
+  mutate_at(to_replace, ~replace_na(.,"None"))
+
+```
+
+### Remaining Features With Missing Data
+
+As we can see, we have managed to take care of a large number of the variables that had missing data, especially those with large percents of missing data. However, we still have to decide how to treat missing data in 'Electrical', 'MassVnrArea', 'GarageYearBuilt', and 'LotFrontage'.
+
+```{r missing data}
+# get percentage of missing data for each column
+na.percentages <- sort(colMeans(is.na(iowa.homes)) * 100)
+
+#create df of missing data percentage information
+na.df <- data.frame(
+  feature = names(na.percentages),
+  percentage_na = na.percentages
+)
+
+#subset df to only contain features with some missing data
+na.df <- na.df[na.df$percentage_na > 0,]
+na.df
+
+#plot feature by missing data percentage to visualize
+ggplot(data=na.df, aes(x = reorder(feature, percentage_na), y = percentage_na)) + 
+  geom_col(fill = "lightblue") +
+  theme_dark() +
+  theme(axis.text.x=element_text(angle=90), plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Feature Name", y = "% Missing", title = "Features With Missing Data")
+
+```
+
+### Replace NA's in Remaining Categorical Features
+
+Read comments below to understand what NA's get replaced by for the remaining features with missing data.
+
+```{r replace NAs in GarageYrBlt}
+# set to 0 representing homes without a garage
+iowa.homes <- iowa.homes %>%
+  mutate(GarageYrBlt=replace_na(GarageYrBlt, 0))
+
+# replace missing data in 'Electrical' feature with "no_info"
+iowa.homes <- iowa.homes %>%
+  mutate(Electrical=replace_na(Electrical, "no_info"))
+
+#replace missing data in 'MasVnrArea' with 0, as this is not part of home
+iowa.homes <- iowa.homes %>%
+  mutate(MasVnrArea=replace_na(MasVnrArea, 0))
+
+#replace missing 'LotFrontage' data with median
+iowa.homes <- iowa.homes %>%
+  mutate(LotFrontage=replace_na(LotFrontage, median(iowa.homes$LotFrontage, na.rm = TRUE)))
+
+```
+
+### Check for Missing Data
+
+Now we can see that there are no longer any columns with missing data.
+
+```{r}
+# get percentage of missing data for each column
+na.percentages <- sort(colMeans(is.na(iowa.homes)) * 100)
+
+#create df of missing data percentage information
+na.df <- data.frame(
+  feature = names(na.percentages),
+  percentage_na = na.percentages
+)
+
+#subset df to only contain features with some missing data
+na.df <- na.df[na.df$percentage_na > 0,]
+na.df
+```
+
+### Set Categorical Variables to Factor Type
+
+```{r set cat features to factor type vars}
+iowa.homes[categorical_cols] <- lapply(iowa.homes[categorical_cols], as.factor)
+str(iowa.homes)
+
+```
+
+### Create New Numeric Features (TotalSF, HouseAge)
+
+Below I have created a new feature "TotalSF" which represents the total surface area of each home. I felt that this would be a good feature to include in the correlation analysis in the next step.
+
+```{r}
+# sum relevant square footage measurements
+iowa.homes <- iowa.homes %>%
+  mutate(TotalSF = rowSums(iowa.homes[, c("TotalBsmtSF", "X1stFlrSF", "X2ndFlrSF", "X3SsnPorch")]))
+
+iowa.homes <- iowa.homes %>%
+  mutate(HouseAge = YrSold - YearBuilt)
+
+iowa.homes <- iowa.homes %>% 
+  mutate(RemodelAge = YrSold - YearRemodAdd)
+```
+
+### Numeric Feature Correlation With SalePrice
+
+Below I have run a correlation analysis on the numeric features with sale price. All features with correlations greater than 0.5 will be included in the step-wise model selection portion of this project. Given that 'HouseAge' shows a stronger correlation than 'YrSold' or 'YearBuilt' on their own, I will use 'HouseAge' in their place. Similarly, 'RemodelAge' shows a tighter correlation with 'SalePrice' than 'YearRemodAdd' alone, and I will use 'RemodelAge' in its place. Finally, 'TotalSF' shows a stronger correlation with 'TotalBsmtSF', 'X1stFlrSF', X2ndFlrSF', and 'X3SsnPorch' on their own and I will use 'TotalSF' in their place.
+
+```{r Numeric Feature Corr with SalePrice}
+
+#create correlation matrix that focuses on variabels correlation to SalePrice
+correlation_matrix <- iowa.homes %>% select(where(is.numeric)) %>% correlate() %>% focus(SalePrice)
+
+#plot correlations on bar plot
+correlation_matrix %>%
+  ggplot(aes(x = term, y = SalePrice)) +
+    geom_bar(stat = "identity") +
+    ylab("Correlation with Sale Price") +
+    xlab("Variable") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust=1))
+
+#get list of features with correlation > 0.5 for numeric features
+correlated_numeric_cols <- c(correlation_matrix$term[abs(correlation_matrix$SalePrice) >= 0.5]) 
+correlated_numeric_cols
+
+```
+
+### Correlated Variables
+
+Below I look at some variables to see their level of correlation with one another to determine if one can be used in place of another to reduce the number of starting variables in the step-wise selection process. I would like to use best-subset selection and it is recommended to have no more than 40 variables given that it is an exhaustive algorithm. In particular, GarageCars and GarageArea seemingly measure something similar, amount of space in the garage.
+
+They have a correlation of 0.88. I will use GarageArea in place of GarageCars.
+
+```{r look at correaltion between variables}
+cor(iowa.homes$GarageArea, iowa.homes$GarageCars)
+```
+
+### Clean Data Frame of Unnecessary Numeric Features
+
+```{r clean numeric features from df}
+to_drop <- c("YrSold", "YearBuilt", "YearRemodAdd", "TotalBsmtSF", "X1stFlrSF", "X2ndFlrSF", "X3SsnPorch", "GarageCars")
+iowa.homes <- iowa.homes %>% select(-any_of(to_drop))
+
+#create correlation matrix that focuses on variabels correlation to SalePrice
+correlation_matrix <- iowa.homes %>% select(where(is.numeric)) %>% correlate() %>% focus(SalePrice)
+
+#get list of features with correlation > 0.5 for numeric features
+correlated_numeric_cols <- c(correlation_matrix$term[abs(correlation_matrix$SalePrice) >= 0.5]) 
+correlated_numeric_cols
+```
+
+### Analysis of Variance Between Mutli-Level Factors
+
+#### Get all Muti-Level Factors
+
+Below I wrote some code to get all the categorical features with more than 2 levels to run an anova on these features in the next step.
+
+```{r}
+
+res <- sapply(iowa.homes, nlevels)
+
+res.df <- data.frame(
+  feature = names(res),
+  num_levels = res
+)
+
+# subset df to only contain features with more than 2 levels
+res.df1 <- (res.df[res.df$num_levels > 2,])
+# subset df to only contain binary features
+res.df2 <- (res.df[res.df$num_levels == 2,])
+
+# create list of numeric features with more than 2 levels
+ml_categorical_cols <- res.df1$feature
+# create list of binary numeric features
+binary_categorical_cols <- res.df2$feature
+
+```
+
+#### ANOVA on all Multi-Level Categorical Variables
+
+Below I run and ANOVA (without interaction) on all of the categorical features with more than 2 levels (non-binary). I did this to try and assess which categorical features show an association with sale price based on an f-statistic with a p-value \> 0.05. All statisticall significant features from this step are grouped into a list "signif_ml_categorical_cols" to be used in the step-wise model selection portion.
+
+The qqplot indicates the residuals are normally distributed and the residuals vs. fitted plot shows the residuals have mostly equal variance with some outliers.
+
+```{r}
+
+# create formula for anova to run (w/o) interaction on the multilevel 
+# categorical columns
+formula_str <- paste("SalePrice ~ ", paste(ml_categorical_cols[-1], collapse = "+"))
+formula_obj <- as.formula(formula_str)
+
+# run anova normally to view summary
+cat.aov <- aov(formula_obj, data = iowa.homes)
+
+# run with anova tidy to get a dataframe like object for parsing easier
+cat.aov.df <- broom::tidy(aov(formula_obj, data = iowa.homes))
+cat.aov.df <- drop_na(cat.aov.df)
+
+# show output of anova
+summary(cat.aov)
+
+#creat list of statistically significant categorical columns
+signif_ml_categrorical_cols <- cat.aov.df$term[cat.aov.df$p.value < 0.05]
+
+#check plots for assumptions
+plot(cat.aov)
+
+# show significant multi-level categorical features
+signif_ml_categrorical_cols
+```
+
+### Subset Data Frame
+
+Below I subset the data to only contain the correlated numeric features, associated categorical features, and binary features selected above.
+
+```{r clea data pt1}
+
+key_features_list <- append(correlated_numeric_cols, signif_ml_categrorical_cols)
+key_features_list <- append(key_features_list, binary_categorical_cols)
+key_features_list <- append(key_features_list, "SalePrice")
+
+iowa.homes <- subset(iowa.homes, select = names(iowa.homes) %in% key_features_list)
+
+key_features_list <- key_features_list[key_features_list != "SalePrice"]  
+```
+
+### Best Subset Selection
+
+Below was the code (taken out) intended to be used for best subset selection. However, with 40 independent variables, this process was taking too long and I decided to try forward and backward step-wise selection for the time being. It is possible that I will go back and try to remove more features if possible, or use a different selection method such as ridge or lasso.
+
+### Forward Model Selection
+
+```{r forward seleciton pt1}
+
+ full.model_str <- paste("SalePrice ~ ", paste(key_features_list[-1], collapse = "+"))
+ full.model <- as.formula(full.model_str)
+ 
+ intercept.model <- lm(SalePrice ~ 1, data = iowa.homes)
+ 
+ forward.model <-step(intercept.model,scope=full.model,direction="forward",trace=1)
+
+```
+
+### Explanation of Forward Subset Selection
+
+As shown above, the forward subset selection method suggests that the 28 feature model is best suited for this. Below I create the best linear model (based on AIC score) and show the summary and plots. The first thing I noticed is that the adjusted R squared value for this model was .89. that is good, but there is definitely room for improvement. The second thing I noticed was that there are many non statistically significant levels within the categorical variables used, for example, many of the neighborhoods do not have statistically significant coefficients, and this is an area of improvement. Perhaps organizing the neighborhoods (and other categorical variables) so that there are less levels being measured would be useful. This could be done by conducting an anova on these categorical variables and then a post-hoc (Tukey HSD) test to see which levels are significant.
+
+Finally, the plots show that the data is somewhat normal, but there are some tail offs at the lower and higher quantiles. Perhaps a box-cox transformation could help here. The residuals vs. fitted looks shows a decently equal variance across the data set. However, the residuals vs. leverage shows some outliers that can possibly be removed. All in all, I'm okay with this model, but there is still work to be done. I would like to avoid over fitting as well and that is another reason to possibly remove some features where adequate.
+
+```{r forward subset selection pt2}
+#Model selected by forward subset seleciton
+best.model <- lm(SalePrice ~ TotalSF + Neighborhood + RoofMatl + KitchenQual + 
+    BsmtQual + BsmtExposure + BldgType + Condition2 + GrLivArea + 
+    BsmtFinType1 + HouseAge + ExterQual + GarageArea + HasPool + 
+    RemodelAge + LotConfig + Exterior1st + GarageQual + CentralAir + 
+    GarageCond + GarageType + Condition1 + SaleType + HasFireplace + 
+    ExterCond + MasVnrType + LotShape + GarageFinish, data = iowa.homes)
+
+summary(best.model)
+plot(best.model)
+
+```
+
+Below I create a simpler model where I remove categorical variables that had p-values greater than 0.000001 in the anova conducted earlier. (HasFireplace, BsmtExposure, HasPool, LotConfig, GarageQual, GarageCond, GarageType, SaleType, ExterCond, GarageFinish). We get a similar adjusted R squared and plots as compared to the more complex model above.
+
+```{r simpler model}
+#simpler model
+simpler.model <- lm(SalePrice ~ TotalSF + Neighborhood + RoofMatl + KitchenQual + 
+    BsmtQual + BldgType + Condition2 + GrLivArea + 
+    BsmtFinType1 + HouseAge + ExterQual + GarageArea +
+    RemodelAge + Exterior1st + CentralAir + Condition1 + 
+    MasVnrType + LotShape, data = iowa.homes)
+summary(simpler.model)
+plot(simpler.model)
+
+
+```
+
+### Nested Model Anova
+
+Below I conduct an anova on the nested model to see if the simpler model should be used or if the more complex model that was suggested by forward subset selection is better.
+
+```{r nested anova}
+anova(best.model,simpler.model)
+```
+
+### Conclusion
+
+Based on the anova above the more complex model is suggested here. As far as next steps go, I would like to conduct the best model step-wise selection, but in order to do so I am going to need to remove some more features due to the computational needs of the exhaustive best subset selection method. I would also like to compare the results of the forward selection method to a backward step wise selection method. Possibly transforming SalePrice via a box-cox transformation could help improve the accuracy of the model after a model is selected. I would not say this is the final model I will be working with, and I would still like to work on this problem. Finally, training the model and testing the model of choice will be the last steps and area where I can make some more changes to the model.
