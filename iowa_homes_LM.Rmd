@@ -27,7 +27,7 @@ library(corrr)
 Load in the "House Prices - Advanced Regression Techniques" data set from kaggle.
 
 ```{r Load Data}
-iowa.homes <- read.csv("../house-prices-data/train.csv", header=TRUE, sep=",") 
+iowa.homes <- read.csv("../project/house-prices-data/train.csv", header=TRUE, sep=",") 
 
 ```
 
