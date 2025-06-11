@@ -30,7 +30,7 @@ from kaggle.
 
 ```{r Load Data}
 # training data set
-iowa.homes <- read.csv("../house-prices-data/train.csv", header=TRUE, sep=",") 
+iowa.homes <- read.csv("data/train.csv", header=TRUE, sep=",") 
 
 ```
 
@@ -684,8 +684,8 @@ Below I load in the test-validate data set and run the necessary
 pre-processing functions on this data set.
 
 ```{r}
-dat.test.valid <- read.csv("../house-prices-data/test.csv", header=TRUE, sep=",")
-dat.saleprice <- read.csv("../house-prices-data/sample_submission.csv")
+dat.test.valid <- read.csv("data/test.csv", header=TRUE, sep=",")
+dat.saleprice <- read.csv("data/sample_submission.csv")
 
 dat.test.valid <- merge(dat.test.valid, dat.saleprice)
 
