@@ -1,10 +1,14 @@
 ---
-editor_options: 
-  markdown: 
-    wrap: 72
+title: "Housing Prices Regression"
+author: ChrisThompson
+date: June 10, 2025
+output:
+  md_document:
+    variant: markdown_github
 ---
 
 ```{r setup, include=FALSE}
+
 library(MASS)
 library(ResourceSelection) # For Hosmer-Lemeshow test
 library(ggplot2)
