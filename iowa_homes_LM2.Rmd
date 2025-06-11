@@ -1,0 +1,859 @@
+---
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+library(MASS)
+library(ResourceSelection) # For Hosmer-Lemeshow test
+library(ggplot2)
+library(tidyverse)
+library(bestglm)
+library(pROC)
+library(corrplot)
+library(ggplot2)
+library(ggcorrplot)
+library(dplyr)
+library(corrr)
+library(glmnet)
+library(mlbench)
+library(haven)
+library(survival)
+library(survminer)
+```
+
+### Load Data Set
+
+Load in the "House Prices - Advanced Regression Techniques" data set
+from kaggle.
+
+```{r Load Data}
+# training data set
+iowa.homes <- read.csv("../house-prices-data/train.csv", header=TRUE, sep=",") 
+
+```
+
+### Explore Missing Values Part 1
+
+Below we can see that there are a number of variables with missing data.
+The most concerning features are Alley, LotFrontage, FireplaceQu, Fence,
+MiscFeature, as they have very large amounts (15% - 99%) of data absent.
+For Alley, MiscFeature, PoolQC, FireplaceQu, Fence, these are homes that
+do not have an alley, a miscelaneous feature (ie. elevator, 2nd Garage,
+Shed, Tennis Court, other), a pool, fireplace, or a fence. LotFrontage
+represents the amount of space between the street and the start of the
+lot, and its possible that these NA values are due to no measurement
+being made or no space between the lot and the street. The features with
+40% or more missing data (Alley, MiscFeature, PoolQC, FireplaceQu, and
+Fence) will be removed and new binary features (HasAlley,
+HasMiscFeature, HasFireplace, HasFence) will be added.
+
+```{r, missing value information}
+# get percentage of missing data for each column
+na.percentages <- sort(colMeans(is.na(iowa.homes)) * 100)
+
+#create df of missing data percentage information
+na.df <- data.frame(
+  feature = names(na.percentages),
+  percentage_na = na.percentages
+)
+
+#subset df to only contain features with some missing data
+na.df <- na.df[na.df$percentage_na > 0,]
+
+#plot feature by missing data percentage to visualize
+ggplot(data=na.df, aes(x = reorder(feature, percentage_na), y = percentage_na)) + 
+  geom_col(fill = "lightblue") +
+  theme_dark() +
+  theme(axis.text.x=element_text(angle=90), plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Feature Name", y = "% Missing", title = "Features With Missing Data")
+
+#print data frame to display numeric percentages for each feature
+na.df
+```
+
+### Feature Engineer Part 1
+
+Below I will be adding new binary features HasAlley, HasMiscFeature,
+HasFireplace, HasFence, HasPool, HasBasement and removing those with
+large amounts of missing data (NA \>= 40%).
+
+```{r, Feature Engineer Part 1}
+features_to_remove <- na.df$feature[na.df$percentage_na > 40]
+
+func_new_binary_vars <- function(df){
+  #add new binary feature "HasBsmt"
+  df <- df %>%
+    mutate(HasAlley = case_when(
+      is.na(Alley) ~ 'no', .default = 'yes')
+    )
+  
+  #add new binary feature "HasMiscFeature"
+  df <- df %>%
+    mutate(HasMiscFeature = case_when(
+      is.na(MiscFeature) ~ 'no', .default = 'yes')
+    )
+  
+  #add new binary feature "HasFireplace"
+  df <- df %>%
+    mutate(HasFireplace = case_when(
+      is.na(FireplaceQu) ~ 'no', .default = 'yes')
+    )
+  
+  #add new binary feature "HasFence"
+  df <- df %>%
+    mutate(HasFence = case_when(
+      is.na(Fence) ~ 'no', .default = 'yes')
+    )
+  
+  #add new binary feature "HasPool"
+  df <- df %>%
+    mutate(HasPool = case_when(
+      is.na(PoolQC) ~ 'no', .default = 'yes')
+    )
+  
+  #add new binary feature "HasBsmt"
+  df <- df %>%
+    mutate(HasBsmt = case_when(
+      is.na(BsmtQual) ~ 'no', .default = 'yes')
+    )
+  
+  #remove columns with large amounts of missing data
+  df <- df[, colMeans(is.na(df)) <= 0.4]
+
+  return(df)
+}
+
+iowa.homes <- func_new_binary_vars(iowa.homes)
+```
+
+### Visualize New Binary Features And Other Categorical Features with Missing Data
+
+From the visualizations below, we can see that there is not a huge
+difference in means for a house having a miscellaneous feature or not,
+having an alley or not, having a fence or not. However, there seems to
+be a significant difference in means for a house that has a pool vs.
+not, where homes with a pool seems to be significantly more expensive,
+and homes with a fireplace are also more expensive. I will therefore
+remove the HasAlley, HasFence, and HasMiscFeature columns, but will keep
+the HasBsmt, HasPool, and HasFireplace features.
+
+I also decided to look at the other two binary vars, 'Street',
+'Utilities', and 'CentralAir' to visualize any difference in the
+saleprice between the two levels. Because there are so few values in the
+NoSeWa and because the mean sale price of this variable appears to be
+fairly close to the mean sale price of AllPub, I will remove this
+feature from the data set. However, the difference in mean and variance
+from analysis of the box plots for 'Street' and 'CentralAir' do seem to
+be statistically significant and indicate that these features may be
+associated with home sale price.
+
+```{r, Visualize New Binary Features}
+
+# create list of variables to plot
+bin_cols_to_plot = c("HasMiscFeature", "HasAlley", "HasFence", "HasFireplace", "HasPool", "HasBsmt", "Street", "Utilities", "CentralAir")
+
+# turn new binary variables to factor type
+iowa.homes[bin_cols_to_plot] <- lapply(iowa.homes[bin_cols_to_plot], as.factor)
+
+# create box plots for binary variables of interest
+lapply(bin_cols_to_plot, 
+      function(n)
+        ggplot(data=iowa.homes, aes_string(x=n, y='SalePrice')) + geom_boxplot()
+      )
+
+func_remove_features_pt2 <- function(df){
+  df <- subset(df, select = -c(HasAlley, HasFence, HasMiscFeature, Street, Utilities))
+  return(df)
+}
+
+iowa.homes <- func_remove_features_pt2(iowa.homes)
+```
+
+```{r, get numeric and categorical columns}
+
+numeric_cols <- iowa.homes %>% select(where(is.numeric), -SalePrice) %>% names()
+categorical_cols <- iowa.homes %>% select(where(~ is.factor(.) || is.character(.))) %>% names()
+# categorical_cols <- sapply(iowa.homes, negate(is.numeric))
+
+```
+
+### Replace Categorical NAs with 'None'
+
+Below I replace NA with "None" in remaining features that represent the
+feature not being present so we do not remove homes where this data is
+missing.
+
+```{r Replace categorical NAs with Mode}
+func_replace_miss_data <- function(df){
+  to_replace <- c("GarageType","GarageFinish","GarageQual","GarageCond",
+                 "BsmtFinType1","BsmtFinType2","BsmtExposure","BsmtCond","BsmtQual",
+                 "MasVnrType")
+  
+  # replace missing data with 'None' in specified columns
+  df <- df %>% 
+    mutate_at(to_replace, ~replace_na(.,"None"))
+  
+  return(df) 
+  }
+
+iowa.homes <- func_replace_miss_data(iowa.homes)
+  
+```
+
+### Remaining Features With Missing Data
+
+As we can see, we have managed to take care of a large number of the
+variables that had missing data, especially those with large percents of
+missing data. However, we still have to decide how to treat missing data
+in 'Electrical', 'MassVnrArea', 'GarageYearBuilt', and 'LotFrontage'.
+
+```{r missing data}
+# get percentage of missing data for each column
+na.percentages <- sort(colMeans(is.na(iowa.homes)) * 100)
+
+#create df of missing data percentage information
+na.df <- data.frame(
+  feature = names(na.percentages),
+  percentage_na = na.percentages
+)
+
+#subset df to only contain features with some missing data
+na.df <- na.df[na.df$percentage_na > 0,]
+na.df
+
+#plot feature by missing data percentage to visualize
+ggplot(data=na.df, aes(x = reorder(feature, percentage_na), y = percentage_na)) + 
+  geom_col(fill = "lightblue") +
+  theme_dark() +
+  theme(axis.text.x=element_text(angle=90), plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Feature Name", y = "% Missing", title = "Features With Missing Data")
+
+```
+
+### Replace NA's in Remaining Categorical Features and Some Numerical Features
+
+Below I replace NA's in the categorical features with NA's in the
+training data set listed above. I also went ahead and replaced missing
+data for features that have missing data in the validate and test set in
+order to clean these data sets.
+
+I replace many of the categorical features with the mode of the feature.
+I also replace NA in some of the numerical features with 0, (as a 0
+represents the feature not being present such as GarageArea, if this is
+NA, it means the home does not have a garage and therefore its area can
+be represented with 0).
+
+```{r replace NAs in GarageYrBlt}
+
+# create function to get mode of categorical column of interest
+func_mode<-function(x){
+ 
+  z<-data.frame(Var=x)%>%
+    group_by(Var)%>%
+    summarise(Total_Count=n())%>%
+    ungroup()%>%
+    head(1)%>%
+    select(Var)%>%
+    pull(Var)
+  
+  return(z)
+}
+
+func_replace_miss_data_pt2 <- function(df){
+  # set to 0 representing homes without a garage
+  df <- df %>%
+    mutate(GarageYrBlt=replace_na(GarageYrBlt, 0))
+
+  df <- df %>%
+    mutate(GarageArea=replace_na(GarageArea, 0))
+  
+  df <- df %>%
+    mutate(Exterior1st=replace_na(Exterior1st, func_mode(Exterior1st)))
+
+  df <- df %>%
+    mutate(Exterior2nd=replace_na(Exterior2nd, func_mode(Exterior2nd)))
+  
+  df <- df %>%
+    mutate(MSZoning=replace_na(MSZoning, func_mode(MSZoning)))
+
+  df <- df %>%
+    mutate(KitchenQual=replace_na(KitchenQual, func_mode(KitchenQual)))
+    
+  df <- df %>%
+    mutate(GarageArea=replace_na(GarageArea, 0))
+  # replace missing data in 'Electrical' feature with "no_info"
+  df <- df %>%
+    mutate(Electrical=replace_na(Electrical, "no_info"))
+  
+  #replace missing data in 'MasVnrArea' with 0, as this is not part of home
+  df <- df %>%
+    mutate(MasVnrArea=replace_na(MasVnrArea, 0))
+  
+  df <- df %>%
+    mutate(TotalBsmtSF = replace_na(TotalBsmtSF, 0))
+  
+  #replace missing 'LotFrontage' data with median
+  df <- df %>%
+    mutate(LotFrontage=replace_na(LotFrontage, median(df$LotFrontage, na.rm = TRUE)))
+  
+  return(df)
+}
+
+iowa.homes <- func_replace_miss_data_pt2(iowa.homes)
+```
+
+### Check for Missing Data
+
+Now we can see that there are no longer any columns with missing data in
+the training data.
+
+```{r}
+# get percentage of missing data for each column
+na.percentages <- sort(colMeans(is.na(iowa.homes)) * 100)
+
+#create df of missing data percentage information
+na.df <- data.frame(
+  feature = names(na.percentages),
+  percentage_na = na.percentages
+)
+
+#subset df to only contain features with some missing data
+na.df <- na.df[na.df$percentage_na > 0,]
+na.df
+```
+
+### Set Categorical Variables to Factor Type
+
+Below I create a function to set the categorical features to factor type
+for modeling later on.
+
+```{r set cat features to factor type vars}
+func_cat_to_factor<-function(df){
+  categorical_cols <- df %>% select(where(~ is.factor(.) || is.character(.))) %>% names()
+  df[categorical_cols] <- lapply(df[categorical_cols], as.factor)
+  
+  return(df)
+}
+
+iowa.homes<-func_cat_to_factor(iowa.homes)
+```
+
+### Create New Numeric Features (TotalSF, HouseAge, RemodelAge)
+
+Below I have created a new feature "TotalSF" which represents the total
+surface area of each home. I felt that this would be a good feature to
+include in the correlation analysis in the next step. I also create a
+feature called 'HouseAge' representing the age of the house, and
+'RemodelAge' representing the age of the remodel if one was done.
+
+```{r}
+# sum relevant square footage measurements
+func_feature_eng <- function(df){
+  df <- df %>%
+    mutate(TotalSF = rowSums(df[, c("TotalBsmtSF", "X1stFlrSF", "X2ndFlrSF", "X3SsnPorch")]))
+  
+  df <- df%>%
+    mutate(HouseAge = YrSold - YearBuilt)
+  
+  df <- df %>% 
+    mutate(RemodelAge = YrSold - YearRemodAdd)
+  
+  return(df)
+}
+
+iowa.homes <- func_feature_eng(iowa.homes)
+```
+
+### Numeric Feature Correlation With SalePrice
+
+Below I have run a correlation analysis on the numeric features with
+sale price. All features with correlations greater than 0.5 will be
+included in the step-wise model selection portion of this project. Given
+that 'HouseAge' shows a stronger correlation than 'YrSold' or
+'YearBuilt' on their own, I will use 'HouseAge' in their place.
+Similarly, 'RemodelAge' shows a tighter correlation with 'SalePrice'
+than 'YearRemodAdd' alone, and I will use 'RemodelAge' in its place.
+Finally, 'TotalSF' shows a stronger correlation with 'TotalBsmtSF',
+'X1stFlrSF', X2ndFlrSF', and 'X3SsnPorch' on their own and I will use
+'TotalSF' in their place.
+
+```{r Numeric Feature Corr with SalePrice}
+
+#create correlation matrix that focuses on variables correlation to SalePrice
+correlation_matrix <- iowa.homes %>% select(where(is.numeric)) %>% correlate() %>% focus(SalePrice)
+
+#plot correlations on bar plot
+correlation_matrix %>%
+  ggplot(aes(x = term, y = SalePrice)) +
+    geom_bar(stat = "identity") +
+    ylab("Correlation with Sale Price") +
+    xlab("Variable") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust=1))
+
+#get list of features with correlation > 0.5 for numeric features
+correlated_numeric_cols <- c(correlation_matrix$term[abs(correlation_matrix$SalePrice) >= 0.5]) 
+correlated_numeric_cols
+
+```
+
+### Correlated Variables
+
+Below I look at the correlation between GarageArea and GarageCars to see
+if one can be used in place of the other. Indeed, they have a
+correlation of 0.88. I will use GarageArea in place of GarageCars.
+
+```{r look at correaltion between variables}
+cor(iowa.homes$GarageArea, iowa.homes$GarageCars)
+```
+
+### Get List of Unnecessary Numeric Features
+
+Below, using the correlation matrix focused on SalePrice, I get a list
+of numerical features that are less correlated (corr \< 0.5) with
+SalePrice to remove these features at a later step.
+
+```{r clean numeric features from df}
+
+correlation_matrix <- iowa.homes %>% select(where(is.numeric)) %>% correlate() %>% focus(SalePrice)
+
+#get list of features with correlation > 0.5 for numeric features
+un_correlated_numeric_cols <- c(correlation_matrix$term[abs(correlation_matrix$SalePrice) < 0.5]) 
+
+un_correlated_numeric_cols
+```
+
+### Analysis of Variance Between Mutli-Level Factors
+
+#### Get all Muti-Level Factors
+
+Below I wrote some code to get all the categorical features with more
+than 2 levels to run an anova on these features in the next step.
+
+```{r}
+
+res <- sapply(iowa.homes, nlevels)
+
+res.df <- data.frame(
+  feature = names(res),
+  num_levels = res
+)
+
+# subset df to only contain features with more than 2 levels
+res.df1 <- (res.df[res.df$num_levels > 2,])
+# subset df to only contain binary features
+res.df2 <- (res.df[res.df$num_levels == 2,])
+
+# create list of numeric features with more than 2 levels
+ml_categorical_cols <- res.df1$feature
+# create list of binary numeric features
+binary_categorical_cols <- res.df2$feature
+
+```
+
+#### ANOVA on all Multi-Level Categorical Variables
+
+Below I run and ANOVA (without interaction) on all of the categorical
+features with more than 2 levels (non-binary). I did this to try and
+assess which categorical features show an association with sale price
+based on an f-statistic with a p-value \> 0.01. All non-statistically
+significant features from this step (based on an alpha of 0.01) will be
+removed from the df.
+
+The qqplot indicates the residuals are normally distributed and the
+residuals vs. fitted plot shows the residuals have mostly equal variance
+with some outliers.
+
+```{r}
+
+# create formula for anova to run (w/o) interaction on the multilevel 
+# categorical columns
+formula_str <- paste("SalePrice ~ ", paste(ml_categorical_cols[-1], collapse = "+"))
+formula_obj <- as.formula(formula_str)
+
+# run anova normally to view summary
+cat.aov <- aov(formula_obj, data = iowa.homes)
+
+# run with anova tidy to get a dataframe like object for parsing easier
+cat.aov.df <- broom::tidy(aov(formula_obj, data = iowa.homes))
+cat.aov.df <- drop_na(cat.aov.df)
+
+# show output of anova
+summary(cat.aov)
+
+#creat list of statistically significant categorical columns
+un_signif_ml_categrorical_cols <- cat.aov.df$term[cat.aov.df$p.value > 0.001]
+
+#check plots for assumptions
+plot(cat.aov)
+
+# show significant multi-level categorical features
+un_signif_ml_categrorical_cols
+
+```
+
+### Remove less associated and correlated columns
+
+Below I created a list of all the insignificant numerical features and
+non-associated categorical features to be removed from the data frame, I
+then remove all of these features from the data frame.
+
+```{r}
+func_remove_features_pt3<-function(df){
+  to_drop <- c("LandSlope", "BsmtCond", "BsmtFinType2", "Heating", "Electrical", "Functional", "GarageFinish", "GarageQual", "GarageCond","GarageCars", "PavedDrive", "SaleType", "SaleCondition", "MSSubClass", "LotFrontage", "LotArea", "OverallCond", "MasVnrArea", "BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF", "LowQualFinSF", "BsmtFullBath", "BsmtHalfBath", "HalfBath", "BedroomAbvGr", "KitchenAbvGr", "Fireplaces", "GarageYrBlt", "WoodDeckSF", "OpenPorchSF", "EnclosedPorch", "ScreenPorch", "PoolArea", "MiscVal", "MoSold", "Condition2", "HouseStyle", "RoofMatl", "Exterior1st", "Exterior2nd")
+  
+  df <- df %>% select(-any_of(to_drop))
+  
+  return(df)
+}
+
+iowa.homes <- func_remove_features_pt3(iowa.homes)
+
+```
+
+### Model Selection
+
+Below I perform a backward model selection, cross validated lasso, and
+cross validated ridge regression model selection. I took both the lambda
+= min, and lambda = 1se models for ridge and lasso. I then apply these
+models to predict values on the validate data set to decide which model
+to use on the test data set. I made the decision for the 'best' model
+based on the lowest root mean squared error.
+
+### Create full model and intercept model
+
+```{r forward seleciton pt1}
+
+full.model_str <- paste("SalePrice ~ .") 
+full.model <- as.formula(full.model_str)
+
+full.model.new <- lm(SalePrice ~ ., data = iowa.homes)
+intercept.model <- lm(SalePrice ~ 1, data = iowa.homes)
+
+```
+
+### Backward Subset Selection
+
+```{r}
+
+backward.model <-step(full.model.new,scope=intercept.model,direction="backward",trace=1, data=iowa.homes)
+```
+
+### Best Backward Model
+
+Based on the lowest AIC score from the backward model selection, the
+best model is the one that included 21 of the 46 variables. Below I
+create a linear model and explore its features. Based on the residuals
+vs. fitted plot, we can see that the variance is mostly homogenously
+spread but gets larger as the fitted values increase. We can also see
+that the residuals are mostly normally distributed aside from a tail of
+points towards the larger theoretical quantiles.
+
+```{r}
+backward.best <- lm(SalePrice ~ LotShape + LandContour + LotConfig + Neighborhood + 
+    Condition1 + BldgType + OverallQual + YearBuilt + YearRemodAdd + 
+    ExterQual + BsmtQual + BsmtExposure + BsmtFinType1 + TotalBsmtSF + 
+    CentralAir + GrLivArea + FullBath + KitchenQual + GarageArea + 
+    HasFireplace, data = iowa.homes)
+
+summary(backward.best)
+plot(backward.best)
+```
+
+### Comparing to Simpler Model
+
+The backward model selection kept the "Condition1" feature. However,
+from the model summary above, we can see that none of the levels
+(represented by dummy variables) related to this feature are
+statistically significant (P\>0.05 for all level of Condition1).
+Therefore, below I will test to see if the simpler model without the
+'Condition1' feature may actually be better by comparing using an anova.
+
+The anova model comparison gave a p-value of 0.025 which is less than
+the alpha of 0.05 and we can conclude that the more complicated model
+that includes 'Condition1' should be used.
+
+```{r}
+backward.simpler <- lm(SalePrice ~ LotShape + LandContour + LotConfig + Neighborhood + BldgType + OverallQual + YearBuilt + YearRemodAdd + 
+    ExterQual + BsmtQual + BsmtExposure + BsmtFinType1 + TotalBsmtSF + 
+    CentralAir + GrLivArea + FullBath + KitchenQual + GarageArea + 
+    HasFireplace, data = iowa.homes)
+
+anova(backward.best,backward.simpler)
+```
+
+### Prepare training data for lasso and ridge regression
+
+```{r prepare data for regression}
+
+X.train = model.matrix(full.model,data=iowa.homes) # Saves the implied model design matrix, which includes dummy coding categorical predictors
+
+X.train<-X.train[,-1] # Remove the first column, which is a column of ones.
+
+y.train = iowa.homes$SalePrice # Saves the outcome variable as a vector
+
+
+```
+
+### Cross validated lasso selection
+
+We can see from the cross validated lasso selection that we get a lambda
+min of 546 and a lambda 1se of 3511. The model generated from the lambda
+min removed far less variables than the lambda 1se model. This is
+expected because as lambda increases, the penalty against parameter
+coefficients is larger and more coefficients are reduced to 0 as lambda
+gets larger.
+
+```{r lasso}
+
+set.seed(202211)
+
+cvfit.lasso.train <- cv.glmnet(x=X.train, y=y.train,alpha=1)
+
+plot(cvfit.lasso.train)
+```
+
+### cross validated lasso lambda min
+
+```{r lasso min}
+
+# Display your lambda.min here
+cvfit.lasso.train$lambda.min
+
+
+# Display the coefficients associated with lambda.min here
+coef(cvfit.lasso.train, s = "lambda.min")
+```
+
+### cross validated lasso lambda 1se
+
+```{r lasso 1se}
+
+# Display your lambda.1se here
+cvfit.lasso.train$lambda.1se
+
+# Display the coefficients associated with lambda.1se here
+coef(cvfit.lasso.train, s = "lambda.1se")
+
+```
+
+### Cross Validated Ridge Regression
+
+Below I perform the cross validated ridge regression. Here we can see
+that the lambda min for the ridge regression was 6281 and the lambda 1se
+was 123310. Many of the variables are pushed closer to zero in the
+lambda 1se model. Again, this is because lambda determines the penalty
+size against parameter coefficients and the larger the lambda, the
+harsher the penalty. The difference between the ridge regression and the
+lasso regression is in the penalty term, where the ridge regression
+penalty term pushes coefficients closer to zero as lambda increases, the
+lasso regression penalty term can get rid of coefficients all together.
+
+```{r ridge}
+set.seed(123456) # Sets a recoverable random seed so ensure that the same results will be obtained if the code is run again
+
+cvfit.ridge.train= cv.glmnet(x=X.train, y=y.train,alpha=0) # Conduct cross-validated ridge regression
+
+plot(cvfit.ridge.train)
+
+```
+
+### cross validated ridge lambda min
+
+```{r}
+
+cvfit.ridge.train$lambda.min # Display the lambda.min value
+
+coef(cvfit.ridge.train, s = "lambda.min") # Display the "shrunk" coefficients associated with lambda.min
+
+summary(cvfit.ridge.train)
+```
+
+### cross validated ridge lambda 1se
+
+```{r}
+cvfit.ridge.train$lambda.1se # Display the lambda.1se value
+
+coef(cvfit.ridge.train, s = "lambda.1se") # Display the "shrunk" coefficients associated with lambda.1se
+```
+
+### Setting up test and validate data
+
+Below I load in the test-validate data set and run the necessary
+pre-processing functions on this data set.
+
+```{r}
+dat.test.valid <- read.csv("../house-prices-data/test.csv", header=TRUE, sep=",")
+dat.saleprice <- read.csv("../house-prices-data/sample_submission.csv")
+
+dat.test.valid <- merge(dat.test.valid, dat.saleprice)
+
+# call necessary functions on dat.test 
+dat.test.valid <- func_new_binary_vars(dat.test.valid)
+
+bin_cols_to_plot = c("HasMiscFeature", "HasAlley", "HasFence", "HasFireplace", "HasPool", "HasBsmt", "Street", "Utilities", "CentralAir")
+
+# turn new binary variables to factor type
+dat.test.valid[bin_cols_to_plot] <- lapply(dat.test.valid[bin_cols_to_plot], as.factor)
+
+dat.test.valid <- func_remove_features_pt2(dat.test.valid)
+dat.test.valid <- func_replace_miss_data(dat.test.valid)
+dat.test.valid <- func_replace_miss_data_pt2(dat.test.valid)
+dat.test.valid <- func_cat_to_factor(dat.test.valid)
+dat.test.valid <- func_feature_eng(dat.test.valid)
+dat.test.valid <- func_remove_features_pt3(dat.test.valid)
+
+```
+
+### split data into validate and test 50/50
+
+Below I split the test and validate data 50:50
+
+```{r split data into valid and test}
+n <- nrow(dat.test.valid) 
+
+set.seed(202211)
+tv.split <- rep(0:1,c(round(n*.5),n-round(n*.5)))
+table(tv.split)   
+
+dat.test <- dat.test.valid[tv.split==1,] 
+dat.valid <- dat.test.valid[tv.split==0,] 
+```
+
+### Prepare validate data for regression analysis
+
+```{r prepare valid data}
+
+X.valid <- model.matrix(full.model,data=dat.valid) # Saves the implied model design matrix, which includes dummy coding categorical predictors
+
+X.valid<-X.valid[,-1] # Remove the first column, which is a column of ones.
+
+# head(X.test) # Confirm that all variables are present and in the expected form - everything looks good!
+
+y.valid = dat.valid$SalePrice # Save the outcome variable as a vector
+```
+
+### Running models on validate data
+
+```{r}
+
+backward.best.preds <- predict(backward.best, newx=X.valid)
+
+cvlasso.lambda.min.preds <- predict(cvfit.lasso.train, newx=X.valid, s = cvfit.lasso.train$lambda.min)
+
+cvlasso.lambda.1se.preds <- predict(cvfit.lasso.train, newx=X.valid, s = cvfit.lasso.train$lambda.1se)
+
+cvridge.lambda.min.preds <- predict(cvfit.ridge.train, newx=X.valid, s = cvfit.ridge.train$lambda.min)
+
+cvridge.lambda.1se.preds <- predict(cvfit.ridge.train, newx=X.valid, s = cvfit.ridge.train$lambda.1se)
+
+
+```
+
+### Comparing root mean squared error from models
+
+Below I compare the root mean square error between the different models
+that I have created. We can see that the ridge 1se cross validated model
+has the lowest mean squared error term (58,818) and this is the model
+that I will select based on this value. The 58,818 means that the model
+estimations of sale price in the validation data set, were off by
+\$58,818 on average.
+
+Its possible that the ridge model fits best because of the large amount
+of features in the data set and there is likely some correlation between
+more of the variables than I was able to identify on my own earlier.
+This is an example of where the ridge model can be useful as it reduces
+coefficients close to zero, but does not get rid of them as with lasso
+regression. The lambda 1se being better than the lambda min is likely
+due to the large amount of variance and low bias in the training model,
+a larger lambda is likely better for predictions as it introduces more
+bias while decreasing variance to regularize the model.
+
+```{r model mspe comparison}
+
+backward.best.valid <- sqrt(mean((backward.best.preds-y.valid)^2))
+backward.best.valid
+
+rmspe.cvlasso.min.valid <-  sqrt(mean((cvlasso.lambda.min.preds-y.valid)^2)) 
+rmspe.cvlasso.min.valid
+
+rmspe.cvlasso.1se.valid <-  sqrt(mean((cvlasso.lambda.1se.preds-y.valid)^2)) 
+rmspe.cvlasso.1se.valid
+
+rmspe.cvridge.min.valid <-  sqrt(mean((cvridge.lambda.min.preds-y.valid)^2)) 
+rmspe.cvridge.min.valid
+
+rmspe.cvridge.1se.valid <-  sqrt(mean((cvridge.lambda.1se.preds-y.valid)^2)) 
+rmspe.cvridge.1se.valid
+
+```
+
+### Testing the Model
+
+Below I first prepare the testing data for predicting and then I use the
+selected cross validated ridge lambda 1se model to make SalePrice
+predictions using the test data. Finally I get the mean squared error of
+the predictions (\$60,141.44), and then I create histograms of the
+predicted sale price overlayed by a histogram of the actual sale price
+from the test data set.
+
+```{r prepare test data}
+
+X.test <- model.matrix(full.model,data=dat.test) # Saves the implied model design matrix, which includes dummy coding categorical predictors
+
+X.test<-X.test[,-1] # Remove the first column, which is a column of ones.
+
+y.test = dat.test$SalePrice # Save the outcome variable as a vector
+
+```
+
+```{r run model on test}
+cvridge.lambda.1se.preds.test <- predict(cvfit.ridge.train, newx=X.test, s = cvfit.ridge.train$lambda.1se)
+
+rmspe.cvridge.1se.test <-  sqrt(mean((cvridge.lambda.1se.preds.test-y.test)^2)) 
+rmspe.cvridge.1se.test
+
+```
+
+```{r}
+dat.test['PredSalePrice'] <- cvridge.lambda.1se.preds.test
+ggplot(data = dat.test) +
+ geom_histogram(aes(x = SalePrice, fill = "Actual Sale Price"), alpha = 0.5) +
+ geom_histogram(aes(x = PredSalePrice, fill = "Predicted Sale Price"), alpha = 0.5) 
+
+mean(dat.test$SalePrice)
+mean(dat.test$PredSalePrice)
+
+mean(dat.test$SalePrice) - mean(dat.test$PredSalePrice)
+```
+
+### Conclusion
+
+The root mean squared error of the model predictions of home sale price
+using the test data set was 60141.44. This means that the average
+difference between the model prediction and the actual sale price was
+\$60,141. We can also see the distribution of the predicted sale price
+and the actual sale price in the test data in the visual above. Clearly,
+the shape of the distributions are noticably different. The predicted
+sale price distribution has a relatively large right tail compared with
+the actual sale price distribution and the actual sale price
+distribution has a larger portion of its data centered around its mean.
+While the average difference between the predicted values and the actual
+values was 60,141, the mean of the predicated sale price was relatively
+close to the mean of the actual sale price. The actual mean was
+\$180,775 and the predicted mean was \$175,490, only off by \$5,284.
+
+### Discussion
+
+While this model is not perfect, I still believe it could be a useful
+tool for getting a 'ballpark' estimate of home prices in Ames, Iowa. In
+the future, I would have liked to find a way feature engineer and deal
+with NA values in a more consolidated, streamlined manner. However, I
+have much to learn about feature engineering and handling missing data,
+and I look forward to becoming better at this. I also would have liked
+to have looked at some transformations (perhaps a box-cox
+transformation) of the feature of interest (SalePrice) to explore how a
+model with such a transformation would compare to the original model.
+Finally, looking for interaction between terms would be another useful
+step to consider in the future to get a more accurate model.
